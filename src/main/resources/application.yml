@@ -1,0 +1,17 @@
+spring:
+  application:
+    name: springboot-ci-cd
+  datasource:
+    driver-class-name: org.postgresql.Driver
+    url: jdbc:postgresql://localhost:5432/postgres?currentSchema=spring_app
+    username: postgres
+    password: postgres
+  jpa:
+    database-platform: org.hibernate.dialect.PostgreSQLDialect
+    database: postgresql
+    hibernate.ddl-auto: validate
+    open-in-view: false
+    show-sql: true
+    properties:
+      hibernate.types.print.banner: false
+
