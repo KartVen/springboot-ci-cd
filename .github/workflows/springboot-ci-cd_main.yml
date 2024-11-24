@@ -28,12 +28,7 @@ jobs:
         run: |
           REQUIRED_VARS=\
           (
-            "NETWORK_NAME"
-            "DATASOURCE_USERNAME"
-            "DATASOURCE_PASSWORD"
-            "DATASOURCE_DATABASE"
-            "DATASOURCE_SCHEMA"
-            "EXPOSE_PORT"
+
           )
           EXIT=0
           for VAR in "${REQUIRED_VARS[@]}"; do

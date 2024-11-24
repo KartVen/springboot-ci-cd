@@ -1,0 +1,131 @@
+name: DEV - Deploy
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [ dev ]
+    paths:
+      - '!.github/**'
+      - '!.gitignore'
+      - '!.gitattributes'
+      - '!README.md'
+
+env:
+  WORKING_DIRECTORY: ${{ secrets.WORKING_DIRECTORY }}
+  NETWORK_NAME: ${{ secrets.NETWORK_NAME }}
+  DATASOURCE_CONTAINER: ${{ secrets.DATASOURCE_CONTAINER }}
+  DATASOURCE_USERNAME: ${{ secrets.DATASOURCE_USERNAME }}
+  DATASOURCE_PASSWORD: ${{ secrets.DATASOURCE_PASSWORD }}
+  DATASOURCE_DATABASE: ${{ secrets.DATASOURCE_DATABASE }}
+
+jobs:
+  prepare:
+    name: Prepare
+    runs-on: self-hosted
+    environment: dev
+    steps:
+      - name: Check environments
+        run: |
+          REQUIRED_VARS=\
+          (
+            "WORKING_DIRECTORY"
+            "NETWORK_NAME"
+            "DATASOURCE_CONTAINER"
+            "DATASOURCE_USERNAME"
+            "DATASOURCE_PASSWORD"
+            "DATASOURCE_DATABASE"
+          )
+          EXIT=0
+          for VAR in "${REQUIRED_VARS[@]}"; do
+            [ -z "${!VAR}" ] && echo "Variable $VAR is missing." && EXIT=1
+          done
+          exit $EXIT
+  update-branch:
+    name: Update branch
+    needs: [ prepare ]
+    runs-on: self-hosted
+    environment: dev
+    steps:
+      - name: Update ${{ github.ref_name }}
+        uses: appleboy/ssh-action@master
+        env:
+          BRANCH: ${{ github.ref_name }}
+        with:
+          host: ${{ secrets.REMOTE_HOST }}
+          username: ${{ secrets.REMOTE_USER }}
+          port: ${{ secrets.REMOTE_PORT }}
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          envs: WORKING_DIRECTORY,BRANCH
+          script: |
+            cd $WORKING_DIRECTORY
+            git fetch origin || exit 1
+            git checkout $BRANCH || exit 1
+            git reset --hard origin/$BRANCH || exit 1 
+            git pull origin $BRANCH || exit 1
+  validate:
+    name: Validate services
+    runs-on: self-hosted
+    needs: [ update-branch ]
+    environment: dev
+    steps:
+      - name: Validate services
+        uses: appleboy/ssh-action@master
+        with:
+          host: ${{ secrets.REMOTE_HOST }}
+          username: ${{ secrets.REMOTE_USER }}
+          port: ${{ secrets.REMOTE_PORT }}
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          envs: WORKING_DIRECTORY,NETWORK_NAME,DATASOURCE_CONTAINER,DATASOURCE_USERNAME,DATASOURCE_DATABASE
+          script: |
+            DATASOURCE_SCHEMAS=("spring_app")
+            
+            echo "Validate network"
+            docker network inspect $NETWORK_NAME > /dev/null 2>&1 \
+              || { echo "Network $NETWORK_NAME is not available."; exit 1; }
+            
+            echo "Validate database"
+            docker exec -t $DATASOURCE_CONTAINER pg_isready \
+              || { echo "PostgreSQL is not running."; exit 1; }
+            
+            docker exec -t $DATASOURCE_CONTAINER psql -lqt -U $DATASOURCE_USERNAME | grep -q $DATASOURCE_DATABASE \
+              || { echo "Database does not exist."; exit 1; }
+            
+            for SCHEMA in "${DATASOURCE_SCHEMAS[@]}"
+            do
+              docker exec -t $DATASOURCE_CONTAINER psql \
+                -U $DATASOURCE_USERNAME \
+                -d $DATASOURCE_DATABASE \
+                -tAc "SELECT 1 FROM information_schema.schemata WHERE schema_name = '$SCHEMA'" \
+                | grep -q 1 || { echo "Schema $SCHEMA does not exist."; exit 1; }
+            done
+  build-and-deploy:
+    name: Build, Test, Deploy
+    runs-on: self-hosted
+    needs: [ validate ]
+    environment: dev
+    steps:
+      - name: Build & deploy
+        uses: appleboy/ssh-action@master
+        with:
+          host: ${{ secrets.REMOTE_HOST }}
+          username: ${{ secrets.REMOTE_USER }}
+          port: ${{ secrets.REMOTE_PORT }}
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          envs: WORKING_DIRECTORY,DATASOURCE_CONTAINER,DATASOURCE_USERNAME,DATASOURCE_PASSWORD,DATASOURCE_DATABASE
+          script: |
+            cd $WORKING_DIRECTORY
+            
+            chmod +x ./gradlew
+            ./gradlew clean assemble test
+            
+            export DATASOURCE_URL=jdbc:postgresql://$DATASOURCE_CONTAINER/$DATASOURCE_DATABASE
+            docker compose -f docker-compose.app.yml up --build -d
+      - name: Cleanup
+        uses: appleboy/ssh-action@master
+        with:
+          host: ${{ secrets.REMOTE_HOST }}
+          username: ${{ secrets.REMOTE_USER }}
+          port: ${{ secrets.REMOTE_PORT }}
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          script: |
+            docker system prune -f
